@@ -5,8 +5,12 @@
 #include <unistd.h>
 #include <dirent.h>
 #include <sys/types.h>
+#include <sys/stat.h>
+#include <fcntl.h>
 #include <ctype.h>
 #include "arraylist.h"
+#include <limits.h>
+#include <sys/wait.h>
 
 
 typedef struct{
@@ -16,16 +20,35 @@ typedef struct{
     int redirection;
 } command;
 
-command *command_init(){
+/*
+ * command_init
+ * Allocates and initializes an empty command struct representing one stage
+ * in a pipeline, with an initial args list and cleared redirection fields.
+ *
+ * Arguments: none (void)
+ * Returns:   pointer to the newly allocated command, or NULL on failure.
+ */
+command *command_init(void){
     command *cmd = malloc(sizeof(command));
     if(!cmd) return NULL;
-    al_init(&cmd->args, 8);
+    if(al_init(&cmd->args, 8) != 0){
+        free(cmd);
+        return NULL;
+    }
     cmd->input_file = NULL;
     cmd->output_file = NULL;
     cmd->redirection = 0;
     return cmd;
 }
 
+/*
+ * free_command
+ * Releases all heap memory owned by a command struct, including its argument
+ * strings, args arraylist, redirection filenames, and the struct itself.
+ *
+ * Arguments: cmd - pointer to the command to free (no-op if NULL).
+ * Returns:   void
+ */
 void free_command(command *cmd){
     if(!cmd) return;
 
@@ -39,6 +62,14 @@ void free_command(command *cmd){
     free(cmd);
 }
 
+/*
+ * free_pipeline
+ * Frees every command stage stored inside a parsed pipeline arraylist and
+ * destroys the pipeline's backing array.
+ *
+ * Arguments: pipeline - pointer to the arraylist of command * stages (no-op if NULL).
+ * Returns:   void
+ */
 void free_pipeline(arraylist_t *pipeline){
     if(!pipeline) return;
 
@@ -49,6 +80,16 @@ void free_pipeline(arraylist_t *pipeline){
     al_destroy(pipeline);
 }
 
+/*
+ * read_commandline
+ * Reads one line of arbitrary length from fd using unbuffered read() calls
+ * (1 byte at a time), stopping immediately at '\n' or EOF so bytes belonging
+ * to subsequent commands are not consumed early.
+ *
+ * Arguments: fd - open file descriptor to read from.
+ * Returns:   heap-allocated, null-terminated line (excluding '\n'), or NULL
+ *            on EOF (with no characters read) or allocation failure.
+ */
 char *read_commandline(int fd){
     int capacity = 128;
     int len = 0;
@@ -82,6 +123,15 @@ char *read_commandline(int fd){
     return buffer;
 }
 
+/*
+ * next_token
+ * Extracts the next whitespace-delimited token—or standalone operator
+ * ("<", ">", ">>", "|")—from a command line and advances *line past it.
+ *
+ * Arguments: line - address of the caller's scanning cursor into the line.
+ * Returns:   heap-allocated token string, or NULL when no tokens remain
+ *            (or on allocation failure). Caller owns the returned string.
+ */
 char *next_token(char **line){
     char *ptr = *line;
 
@@ -120,6 +170,16 @@ char *next_token(char **line){
     return token;
 }
 
+/*
+ * is_wildcard
+ * Tests whether a filename matches a single-'*' wildcard pattern (prefix +
+ * zero or more characters + suffix). Patterns starting with '*' will not
+ * match hidden filenames starting with '.'.
+ *
+ * Arguments: name    - directory entry filename to test.
+ *            pattern - filename pattern containing '*' (no '/' characters).
+ * Returns:   1 if name matches pattern, 0 otherwise.
+ */
 int is_wildcard(const char *name, const char *pattern){
     char *wildcard  = strchr(pattern, '*');
     if(!wildcard) return 0;
@@ -148,10 +208,29 @@ int is_wildcard(const char *name, const char *pattern){
     return 1;
 }
 
+/*
+ * compare_strings
+ * qsort() comparator for sorting an array of char * string pointers in
+ * lexicographical order via strcmp().
+ *
+ * Arguments: a, b - pointers to two char * elements in the array being sorted.
+ * Returns:   negative, zero, or positive integer as returned by strcmp().
+ */
 int compare_strings(const void *a, const void *b){
     return strcmp(*(const char **)a, *(const char **)b);
 }
 
+/*
+ * append_wildcard_or_argument
+ * Appends token to command->args; if token contains '*', expands it against
+ * files in the target directory in sorted order, or appends token literally
+ * if no files match (or if the directory cannot be opened / path is too long).
+ * Takes ownership of token (either storing it or freeing it if expanded).
+ *
+ * Arguments: command - target command struct whose args list is appended to.
+ *            token   - heap-allocated argument or wildcard token.
+ * Returns:   void
+ */
 void append_wildcard_or_argument(command *command, char *token){
     
     // if no wildcard token just append token into argument list 
@@ -166,12 +245,16 @@ void append_wildcard_or_argument(command *command, char *token){
 
     if (last_slash){
         size_t directory_length = (size_t)(last_slash - token);
+        if(directory_length >= sizeof(directory_path)){
+            al_append(&command->args, token);
+            return;
+        }
         if(directory_length == 0){
             strcpy(directory_path, "/");
         } else {
-            strncpy(directory_path, token, directory_length);
+            memcpy(directory_path, token, directory_length);
             directory_path[directory_length] = '\0';
-        } 
+        }
         pattern = last_slash + 1;
     } else {
         strcpy(directory_path, ".");
@@ -218,6 +301,8 @@ void append_wildcard_or_argument(command *command, char *token){
         for (unsigned i = 0; i < al_length(&matches); i++){
             al_append(&command->args, matches.data[i]);
         }
+
+        matches.length = 0;
         al_destroy(&matches);
         free(token);
     } else {
@@ -227,11 +312,20 @@ void append_wildcard_or_argument(command *command, char *token){
 }
 
 
+/*
+ * parse_line
+ * Strips any '#' comment and parses a command line into a pipeline of
+ * command structs with NULL-terminated argv arrays, expanded wildcards,
+ * and input/output redirection targets ("<", ">", ">>").
+ *
+ * Arguments: line     - mutable command line string (truncated at '#' if found).
+ *            pipeline - uninitialized arraylist_t populated with command *
+ *                       stages when the function returns 0.
+ * Returns:   0 on valid command/pipeline, 1 if the line is empty or a comment
+ *            (pipeline left uninitialized), or -1 on syntax/allocation error
+ *            (all partial allocations freed).
+ */
 int parse_line(char *line, arraylist_t *pipeline){
-
-    //create a pipeline for input
-    if(al_init(pipeline, 4) != 0) return -1;
-
     //if we have a comment ignore everything after with terminator
     char *comment = strchr(line, '#');
     if(comment) *comment = '\0';
@@ -243,6 +337,12 @@ int parse_line(char *line, arraylist_t *pipeline){
 
     //if we dont have anything then return to skip
     if(!token) return 1;
+
+    //create a pipeline for input
+    if(al_init(pipeline, 4) != 0){
+        free(token);
+        return -1;
+    }
 
     //create new command and add it to the pipeline
     command *curr = command_init();
@@ -329,121 +429,439 @@ int parse_line(char *line, arraylist_t *pipeline){
     return 0;
 }
 
-int main(void) {
-    printf("====================================================\n");
-    printf("         MYSH PARSER & WILDCARD TEST SUITE          \n");
-    printf("====================================================\n\n");
+void print_prompt(void) {
+    char cwd[PATH_MAX];
 
-    const char *test_cases[] = {
-        /* Basic Wildcard Expansions */
-        "ls *.c",
-        "echo *.h",
-        "ls a*.c",
-        "cat non_existent_pattern*.xyz",
-
-        /* Directory Path Wildcards */
-        "ls /usr/include/std*.h",
-        "echo /bin/l*",
-
-        /* Pipeline + Wildcards */
-        "cat *.c | grep include | wc -l",
-
-        /* Redirection + Wildcards */
-        "grep -n main *.c > results.txt",
-        "cat < input.txt | sort >> output.log",
-
-        /* Hidden File Check (should NOT match hidden files like .git or .) */
-        "echo *",
-
-        /* Syntax Errors */
-        "| ls",
-        "cat < | grep foo",
-        "echo hi >"
-    };
-
-    size_t num_tests = sizeof(test_cases) / sizeof(test_cases[0]);
-
-    printf("--- Running Built-in Test Cases ---\n\n");
-    for (size_t t = 0; t < num_tests; t++) {
-        printf(">>> TEST %zu: \"%s\"\n", t + 1, test_cases[t]);
-
-        char *line = strdup(test_cases[t]);
-        arraylist_t pipeline;
-        int status = parse_line(line, &pipeline);
-
-        if (status == 1) {
-            printf("    [Result: Empty line or comment ignored]\n");
-        } else if (status == -1) {
-            printf("    [Result: Syntax error detected (Correct for malformed lines)]\n");
-        } else {
-            printf("    [Result: Parsed %u command stage(s)]\n", al_length(&pipeline));
-            for (unsigned i = 0; i < al_length(&pipeline); i++) {
-                command *cmd = (command *)pipeline.data[i];
-                char **args = (char **)cmd->args.data;
-
-                printf("      [Stage %u]:\n", i);
-                for (int j = 0; args[j] != NULL; j++) {
-                    printf("        argv[%d] = \"%s\"\n", j, args[j]);
-                }
-                if (cmd->input_file) {
-                    printf("        stdin  < \"%s\"\n", cmd->input_file);
-                }
-                if (cmd->output_file) {
-                    printf("        stdout %s \"%s\"\n", cmd->redirection ? ">>" : ">", cmd->output_file);
-                }
-            }
-            free_pipeline(&pipeline);
-        }
-
-        free(line);
-        printf("\n");
+    if(getcwd(cwd, sizeof(cwd)) == NULL) {
+        printf("ERROR: getcwd() failed. please run cd\nmysh$ ");
+        fflush(stdout);
+        return;
     }
 
-    printf("====================================================\n");
-    printf("         INTERACTIVE MODE (Ctrl+D to exit)          \n");
-    printf("====================================================\n\n");
+    const char *home = getenv("HOME");
+    size_t home_len = home ? strlen(home) : 0;
 
-    while (1) {
-        printf("test-shell$ ");
-        fflush(stdout);
+    if (home && home_len > 0 && strncmp(cwd, home, home_len) == 0 && (cwd[home_len] == '\0' || cwd[home_len] == '/')) {
+        printf("~%s$ ", cwd + home_len);
+    } else {
+        printf("%s$ ", cwd);
+    }
+    fflush(stdout);
+    return;
+}
 
-        char *line = read_commandline(STDIN_FILENO);
-        if (!line) {
-            printf("\nExiting.\n");
+void report_status(int status) {
+    if (WIFEXITED(status)) {
+        int code = WEXITSTATUS(status);
+        if (code != 0) printf("Exited with status %d\n", code);
+    } else if (WIFSIGNALED(status)) {
+        int sig = WTERMSIG(status);
+        printf("Terminated by signal %d (%s)\n", sig, strsignal(sig));
+    }
+}
+
+int is_builtin(const char *name) {
+    if (strcmp(name, "cd") == 0 || strcmp(name, "pwd") == 0 || strcmp(name, "which") == 0 || strcmp(name, "exit") == 0) {
+        return 1;
+    }
+    return 0;
+}
+
+char *find_executable(const char *name){
+    if (!name || name[0] == '\0') return NULL;
+
+    if (strchr(name, '/') != NULL) {
+        if(access(name, X_OK) == 0) {
+            return strdup(name); // need a malloced string so free(path) doesnt mess up later
+        }
+        return NULL;
+    }
+
+    const char *to_search[] = {"/usr/local/bin", "/usr/bin", "/bin"};
+    for(int i = 0; i < 3; i++) {
+        size_t len = strlen(to_search[i]) + 1 + strlen(name) + 1;
+
+        char *full_path = malloc(len);
+        if (!full_path) return NULL;
+
+        snprintf(full_path, len, "%s/%s", to_search[i], name);
+        if(access(full_path, X_OK) == 0) {
+            return full_path;
+        }
+
+        free(full_path);
+    }
+    return NULL;
+}
+
+int setup_redirection(command *cmd, int use_dev_null){
+    if(cmd->input_file) {
+        int fd = open(cmd->input_file, O_RDONLY);
+        if(fd < 0) {
+            perror(cmd->input_file);
+            return -1;
+        }
+        if (dup2(fd, STDIN_FILENO) < 0) {
+            perror("dup2");
+            close(fd);
+            return -1;
+        }
+        close(fd);
+    } else if(use_dev_null) {
+        int fd = open("/dev/null", O_RDONLY);
+
+        if (fd < 0) {
+            perror("/dev/null");
+            return -1;
+        }
+
+        if (dup2(fd, STDIN_FILENO) < 0) {
+            perror("dup2");
+            close(fd);
+            return -1;
+        }
+
+        close(fd);
+    }
+
+    if (cmd->output_file) {
+            int flags;
+
+            if (cmd->redirection) {
+                flags = O_WRONLY | O_CREAT | O_APPEND;
+            } else {
+                flags = O_WRONLY | O_CREAT | O_TRUNC;
+            }
+
+            int fd = open(cmd->output_file, flags, S_IRUSR | S_IWUSR | S_IRGRP);
+
+            if (fd < 0) {
+                perror(cmd->output_file);
+                return -1;
+            }
+            if(dup2(fd, STDOUT_FILENO) < 0) {
+                perror("dup2 in setup_redirection");
+                close(fd);
+                return -1;
+            }
+
+            close(fd);
+    }
+    return 0;
+}
+
+int run_builtin(command *cmd, int *should_exit) {
+    char **args = (char **)cmd->args.data;
+
+    if(strcmp(args[0], "cd") == 0) {
+        if (args[1] != NULL && args[2] != NULL) {
+        fprintf(stderr, "ERROR: cd has too many argments\n");
+        return 1;
+        }
+
+        const char *target;
+
+        if (args[1] != NULL) {
+            target = args[1];
+        } else {
+            target = getenv("HOME");
+        }
+
+        if (!target) {
+            fprintf(stderr, "ERROR: in cd, there is no HOME");
+            return -1;
+        }
+
+        if (chdir(target) != 0) {
+            perror("cd");
+            return 1;
+        }
+
+        return 0;
+    }
+
+    if(strcmp(args[0], "which") == 0) {
+        if(args[1] == NULL) {
+            fprintf(stderr, "ERORR: missing arg for which command\n");
+            return 1;
+        }
+        int status = 0;
+        for (int i = 1; args[i] != NULL; i++) {
+            char *path = find_executable(args[i]);
+            if(!path) {
+                status = 1;
+            } else {
+                printf("%s\n", path);
+                free(path);
+            }
+        }
+        return status;
+    }
+
+    if(strcmp(args[0], "pwd") == 0) {
+        if (args[1] != NULL) {
+            fprintf(stderr, "ERROR: too many args for pwd\n");
+            return 1;
+        }
+
+        char cwd[PATH_MAX];
+        if(getcwd(cwd, sizeof(cwd)) == NULL) {
+            perror("pwd");
+            return 1;
+        }
+
+        printf("%s\n", cwd);
+        return 0;
+    }
+
+    if(strcmp(args[0], "exit") == 0) {
+        *should_exit = 1;
+        return 0;
+    }
+    return 1;
+}
+
+int execute_pipeline(arraylist_t *pipeline, int interactive, int *should_exit, int *last_status) {
+    int count = (int) al_length(pipeline);
+    
+    if (count == 1) {
+        command *cmd = (command *) pipeline->data[0];
+        char **args = (char **)cmd->args.data;
+
+        if (is_builtin(args[0])) {
+            int saved_in = -1;
+            int saved_out = -1;
+
+            if(cmd->input_file) {
+                saved_in = dup(STDIN_FILENO);
+            }
+
+            if(cmd->output_file) {
+                saved_out = dup(STDOUT_FILENO);
+            }
+
+            if (setup_redirection(cmd, 0) == 0) {
+                run_builtin(cmd, should_exit);
+                fflush(stdout);
+            }
+
+            if(saved_in != -1) {
+                dup2(saved_in, STDIN_FILENO);
+                close(saved_in);
+            }
+
+            if(saved_out != -1) {
+                dup2(saved_out, STDOUT_FILENO);
+                close(saved_out);
+            }
+
+            return 0;
+        } else {
+            fflush(NULL);
+            pid_t pid = fork();
+
+            if(pid < 0) {
+                perror("fork");
+                return 0;
+            }
+
+            if (pid == 0) {
+                if (setup_redirection(cmd, !interactive) < 0) {
+                    _exit(1);
+                }
+
+                char *path = find_executable(args[0]);
+                if(!path) {
+                    fprintf(stderr, "%s: command not found\n", args[0]);
+                    _exit(1);
+                }
+
+                execv(path, args);
+                perror(args[0]);
+                free(path);
+                _exit(1);
+            }
+
+            waitpid(pid, last_status, 0);
+            return 1;
+        }
+    } else if (count > 1){
+        pid_t *pids = malloc(count * sizeof(pid_t));
+        if (!pids) {
+            perror("mallocing children");
+            return 0;
+        }
+
+        int prev_read = -1;
+        fflush(NULL);
+
+        for (int i = 0; i < count; i++) {
+            command *cmd = (command *) pipeline->data[i];
+            char **args = (char **)cmd->args.data;
+
+            if(strcmp(args[0], "exit") == 0) {
+                *should_exit = 1;
+            }
+
+            int pfd[2] = {-1, -1};
+
+            if(i < count - 1) {
+                if (pipe(pfd) < 0) {
+                    perror("pipe");
+                    if (prev_read != -1) close(prev_read);
+                    for(int j = 0; j < i; j++) {
+                        waitpid(pids[j], NULL, 0);
+                    }
+                    free(pids);
+                    return 0;
+                }
+            }
+
+            pid_t pid = fork();
+            if (pid < 0) {
+                perror("fork");
+                if(prev_read != -1) close(prev_read);
+                if(i < count - 1) {
+                    close(pfd[0]);
+                    close(pfd[1]);
+                }
+                for(int j = 0; j < i; j++) {
+                    waitpid(pids[j], NULL, 0);
+                }
+                free(pids);
+                return 0;
+            }
+
+            if (pid == 0) {
+                if (prev_read != -1) {
+                    dup2(prev_read, STDIN_FILENO);
+                    close(prev_read);
+                }
+
+                if (i < count - 1) {
+                    dup2(pfd[1], STDOUT_FILENO);
+                    close(pfd[0]);
+                    close(pfd[1]);
+                }
+
+                if (setup_redirection(cmd, i == 0 && !interactive) < 0) {
+                    _exit(1);
+                }
+
+                if (is_builtin(args[0])) {
+                    int fakeExit = 0;
+                    int commandCode = run_builtin(cmd, &fakeExit);
+                    fflush(stdout);
+                    _exit(commandCode);
+                } else {
+                    char *path = find_executable(args[0]);
+                    if (!path) {
+                        fprintf(stderr, "%s: command wasn't found\n", args[0]);
+                        _exit(1);
+                    }
+                    execv(path, args);
+                    perror(args[0]);
+                    free(path);
+                    _exit(1);
+                }
+            }
+
+            pids[i] = pid;
+
+            if(prev_read != -1) {
+                close(prev_read);
+            }
+            if(i < count - 1) {
+                close(pfd[1]);
+                prev_read = pfd[0];
+            }
+        }
+
+        for(int i = 0; i < count; i++) {
+            int status = 0;
+
+            waitpid(pids[i], &status, 0);
+
+            if (i == count - 1) {
+                *last_status = status;
+            }
+        }
+
+        free(pids);
+        return 1;
+    } else {
+        *should_exit = 1;
+        return 0;
+    }
+}
+
+int main (int argc, char **argv) {
+    int input_fd;
+    int interactive;
+
+    switch (argc) {
+        case 1:
+            input_fd = STDIN_FILENO;
+            interactive = isatty(input_fd);
+            break;
+        case 2:
+            input_fd = open(argv[1], O_RDONLY);
+            interactive = 0;
+            if (input_fd < 0) {
+                perror("File open failed");
+                return EXIT_FAILURE;
+            }
+            break;
+        default:
+            fprintf(stderr, "ERROR: Incorrect number of args. Either 0 args, or 1 arg with the input file.\n");
+            return EXIT_FAILURE;
+    }
+
+    if (interactive) {
+        printf("Hello Sir, welcome to jarvissh!\n");
+    }
+
+    int should_exit = 0;
+    while (!should_exit) {
+        if (interactive) {
+            print_prompt(); 
+        }
+
+        char *line = read_commandline(input_fd);
+        if (line == NULL) {
             break;
         }
 
         arraylist_t pipeline;
-        int status = parse_line(line, &pipeline);
+        int parse_status = parse_line(line, &pipeline);
 
-        if (status == 1) {
-            printf("  -> [Empty line / comment ignored]\n");
-        } else if (status == -1) {
-            printf("  -> [Syntax Error Detected]\n");
-        } else {
-            printf("  -> Successfully parsed %u command(s):\n", al_length(&pipeline));
-
-            for (unsigned i = 0; i < al_length(&pipeline); i++) {
-                command *cmd = (command *)pipeline.data[i];
-                char **args = (char **)cmd->args.data;
-
-                printf("     [Command %u]\n", i);
-                for (int j = 0; args[j] != NULL; j++) {
-                    printf("       argv[%d] = \"%s\"\n", j, args[j]);
-                }
-                if (cmd->input_file) {
-                    printf("       stdin  < \"%s\"\n", cmd->input_file);
-                }
-                if (cmd->output_file) {
-                    printf("       stdout %s \"%s\"\n", cmd->redirection ? ">>" : ">", cmd->output_file);
-                }
-            }
-            free_pipeline(&pipeline);
+        if (parse_status == 1) {
+            free(line);
+            continue;
+        }
+        if (parse_status == -1) {
+            fprintf(stderr, "syntax error: %s\n", line);
+            free(line);
+            continue;
         }
 
         free(line);
-        printf("\n");
+
+        int last_status = 0;
+        int ran_child = execute_pipeline(&pipeline, interactive, &should_exit, &last_status);
+
+        if (interactive && ran_child) report_status(last_status);
+
+        free_pipeline(&pipeline);
     }
 
-    return 0;
+    if (interactive) {
+        printf("\nGoodnight Sir, exiting jarvissh.\n");
+    }
+
+    if (input_fd != STDIN_FILENO) {
+        close(input_fd);
+    }
+
+    return EXIT_SUCCESS;
 }

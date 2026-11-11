@@ -1,19 +1,11 @@
 CC = gcc
-CFLAGS = -Wall -Wextra -std=c99 -pedantic -g
+CFLAGS = -Wall -Wextra -g
 TARGET = mysh
 
 SRCS = main.c arraylist.c
-OBJS = $(SRCS:.c=.o)
 
-.PHONY: all clean
-
-all: $(TARGET)
-
-$(TARGET): $(OBJS)
-	$(CC) $(CFLAGS) -o $(TARGET) $(OBJS)
-
-%.o: %.c
-	$(CC) $(CFLAGS) -c $< -o $@
+all: main.c arraylist.c arraylist.h
+	$(CC) $(CFLAGS) -o $(TARGET) $(SRCS)
 
 clean:
-	rm -f $(OBJS) $(TARGET)
+	rm -rf mysh mysh.dSYM/

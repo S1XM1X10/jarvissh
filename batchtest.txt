@@ -1,0 +1,8 @@
+echo "running: cd .."
+cd ..
+echo "running: cd test/batchtest"
+cd test/batchtest
+echo "running: pwd > test1.txt"
+pwd > test1.txt
+echo "running: wc -w < test1.txt"
+wc -w < test1.txt

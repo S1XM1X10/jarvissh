@@ -41,7 +41,7 @@ command *command_init(void){
 /**
  * @brief Frees a command struct along with its args and redirection paths.
  *
- * @param cmd Pointer to the command to free (ignored if NULL).
+ * @param cmd pointer to the command to free (ignored if NULL).
  */
 void free_command(command *cmd){
     if(!cmd) return;

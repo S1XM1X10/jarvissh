@@ -113,7 +113,7 @@ char *read_commandline(int fd){
 /**
  * @brief Pulls the next token or operator (<, >, >>, |) from a line.
  *
- * @param line   Pointer to the current scan position (updated past the token).
+ * @param line   pointer to the current scan position (updated past the token).
  * @return char* Newly allocated token string, or NULL when out of tokens.
  */
 char *next_token(char **line){
@@ -155,10 +155,10 @@ char *next_token(char **line){
 }
 
 /**
- * @brief Checks if a filename matches a single-'*' wildcard pattern.
+ * @brief Checks if a filename matches a single-'*' wildcard pattern (leading '*' ignores hidden dotfiles).
  *
  * @param name    Filename to check.
- * @param pattern Pattern with '*' (leading '*' ignores hidden dotfiles).
+ * @param pattern Pattern with '*'
  * @return int    1 if it matches, 0 otherwise.
  */
 int is_wildcard(const char *name, const char *pattern){
@@ -201,10 +201,10 @@ int compare_strings(const void *a, const void *b){
 }
 
 /**
- * @brief Appends a token to command->args, expanding '*' globs if matched.
+ * @brief Appends a token to command->args, expanding '*' sections if matched.
  *
- * @param command Command struct receiving the argument(s).
- * @param token   Heap-allocated token (stored as-is or freed if expanded).
+ * @param command Command struct with the args.
+ * @param token   Heap-allocated token.
  */
 void append_wildcard_or_argument(command *command, char *token){
     
@@ -290,7 +290,7 @@ void append_wildcard_or_argument(command *command, char *token){
 /**
  * @brief Strips comments and parses a command line into pipeline stages.
  *
- * @param line     Input line buffer (modified in place if '#' is found).
+ * @param line     Input line.
  * @param pipeline Output arraylist populated with command* stages on success.
  * @return int     0 on success, 1 if empty/comment, -1 on syntax/memory error.
  */
@@ -438,10 +438,10 @@ void report_status(int status) {
 }
 
 /**
- * @brief Checks whether a command name is one of the shell built-ins.
+ * @brief Checks whether a command name is one of the built-ins.
  *
  * @param name Command name to check.
- * @return int 1 if built-in (cd, pwd, which, exit), 0 otherwise.
+ * @return int 1 if built-in command, 0 otherwise.
  */
 int is_builtin(const char *name) {
     if (strcmp(name, "cd") == 0 || strcmp(name, "pwd") == 0 || strcmp(name, "which") == 0 || strcmp(name, "exit") == 0) {
@@ -454,7 +454,7 @@ int is_builtin(const char *name) {
  * @brief Resolves a command path directly (if '/') or in standard bin dirs.
  *
  * @param name    Program name or path.
- * @return char*  Heap-allocated executable path, or NULL if not found.
+ * @return char*  Dynamically-allocated executable path, or NULL if not found.
  */
 char *find_executable(const char *name){
     if (!name || name[0] == '\0') return NULL;
@@ -808,10 +808,10 @@ int execute_pipeline(arraylist_t *pipeline, int interactive, int *should_exit, i
 }
 
 /**
- * @brief Entry point for mysh; picks interactive/batch mode and runs the REPL loop.
+ * @brief Entry point for mysh; picks interactive/batch mode and runs the main loop.
  *
  * @param argc Argument count (expects 1 or 2).
- * @param argv Argument vector (optional script path in argv[1]).
+ * @param argv Argument vector.
  * @return int EXIT_SUCCESS normally, or EXIT_FAILURE on bad args/file open error.
  */
 int main (int argc, char **argv) {

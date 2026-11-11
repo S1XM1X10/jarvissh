@@ -20,13 +20,10 @@ typedef struct{
     int redirection;
 } command;
 
-/*
- * command_init
- * Allocates and initializes an empty command struct representing one stage
- * in a pipeline, with an initial args list and cleared redirection fields.
+/**
+ * @brief Allocates and initializes a new command struct.
  *
- * Arguments: none (void)
- * Returns:   pointer to the newly allocated command, or NULL on failure.
+ * @return command* Pointer to the new command, or NULL on allocation failure.
  */
 command *command_init(void){
     command *cmd = malloc(sizeof(command));
@@ -41,13 +38,10 @@ command *command_init(void){
     return cmd;
 }
 
-/*
- * free_command
- * Releases all heap memory owned by a command struct, including its argument
- * strings, args arraylist, redirection filenames, and the struct itself.
+/**
+ * @brief Frees a command struct along with its args and redirection paths.
  *
- * Arguments: cmd - pointer to the command to free (no-op if NULL).
- * Returns:   void
+ * @param cmd Pointer to the command to free (ignored if NULL).
  */
 void free_command(command *cmd){
     if(!cmd) return;
@@ -62,13 +56,10 @@ void free_command(command *cmd){
     free(cmd);
 }
 
-/*
- * free_pipeline
- * Frees every command stage stored inside a parsed pipeline arraylist and
- * destroys the pipeline's backing array.
+/**
+ * @brief Frees every command in a pipeline and destroys the list.
  *
- * Arguments: pipeline - pointer to the arraylist of command * stages (no-op if NULL).
- * Returns:   void
+ * @param pipeline Arraylist of command* stages to clean up.
  */
 void free_pipeline(arraylist_t *pipeline){
     if(!pipeline) return;
@@ -80,15 +71,11 @@ void free_pipeline(arraylist_t *pipeline){
     al_destroy(pipeline);
 }
 
-/*
- * read_commandline
- * Reads one line of arbitrary length from fd using unbuffered read() calls
- * (1 byte at a time), stopping immediately at '\n' or EOF so bytes belonging
- * to subsequent commands are not consumed early.
+/**
+ * @brief Reads one line from fd using unbuffered read() calls.
  *
- * Arguments: fd - open file descriptor to read from.
- * Returns:   heap-allocated, null-terminated line (excluding '\n'), or NULL
- *            on EOF (with no characters read) or allocation failure.
+ * @param fd File descriptor to read from.
+ * @return char* Heap-allocated line without '\n', or NULL on EOF/error.
  */
 char *read_commandline(int fd){
     int capacity = 128;
@@ -123,14 +110,11 @@ char *read_commandline(int fd){
     return buffer;
 }
 
-/*
- * next_token
- * Extracts the next whitespace-delimited token—or standalone operator
- * ("<", ">", ">>", "|")—from a command line and advances *line past it.
+/**
+ * @brief Pulls the next token or operator (<, >, >>, |) from a line.
  *
- * Arguments: line - address of the caller's scanning cursor into the line.
- * Returns:   heap-allocated token string, or NULL when no tokens remain
- *            (or on allocation failure). Caller owns the returned string.
+ * @param line   Pointer to the current scan position (updated past the token).
+ * @return char* Newly allocated token string, or NULL when out of tokens.
  */
 char *next_token(char **line){
     char *ptr = *line;
@@ -170,15 +154,12 @@ char *next_token(char **line){
     return token;
 }
 
-/*
- * is_wildcard
- * Tests whether a filename matches a single-'*' wildcard pattern (prefix +
- * zero or more characters + suffix). Patterns starting with '*' will not
- * match hidden filenames starting with '.'.
+/**
+ * @brief Checks if a filename matches a single-'*' wildcard pattern.
  *
- * Arguments: name    - directory entry filename to test.
- *            pattern - filename pattern containing '*' (no '/' characters).
- * Returns:   1 if name matches pattern, 0 otherwise.
+ * @param name    Filename to check.
+ * @param pattern Pattern with '*' (leading '*' ignores hidden dotfiles).
+ * @return int    1 if it matches, 0 otherwise.
  */
 int is_wildcard(const char *name, const char *pattern){
     char *wildcard  = strchr(pattern, '*');
@@ -208,28 +189,22 @@ int is_wildcard(const char *name, const char *pattern){
     return 1;
 }
 
-/*
- * compare_strings
- * qsort() comparator for sorting an array of char * string pointers in
- * lexicographical order via strcmp().
+/**
+ * @brief Comparator for sorting an array of C strings with qsort().
  *
- * Arguments: a, b - pointers to two char * elements in the array being sorted.
- * Returns:   negative, zero, or positive integer as returned by strcmp().
+ * @param a   Pointer to the first char* element.
+ * @param b   Pointer to the second char* element.
+ * @return int Result of strcmp() on the two strings.
  */
 int compare_strings(const void *a, const void *b){
     return strcmp(*(const char **)a, *(const char **)b);
 }
 
-/*
- * append_wildcard_or_argument
- * Appends token to command->args; if token contains '*', expands it against
- * files in the target directory in sorted order, or appends token literally
- * if no files match (or if the directory cannot be opened / path is too long).
- * Takes ownership of token (either storing it or freeing it if expanded).
+/**
+ * @brief Appends a token to command->args, expanding '*' globs if matched.
  *
- * Arguments: command - target command struct whose args list is appended to.
- *            token   - heap-allocated argument or wildcard token.
- * Returns:   void
+ * @param command Command struct receiving the argument(s).
+ * @param token   Heap-allocated token (stored as-is or freed if expanded).
  */
 void append_wildcard_or_argument(command *command, char *token){
     
@@ -312,18 +287,12 @@ void append_wildcard_or_argument(command *command, char *token){
 }
 
 
-/*
- * parse_line
- * Strips any '#' comment and parses a command line into a pipeline of
- * command structs with NULL-terminated argv arrays, expanded wildcards,
- * and input/output redirection targets ("<", ">", ">>").
+/**
+ * @brief Strips comments and parses a command line into pipeline stages.
  *
- * Arguments: line     - mutable command line string (truncated at '#' if found).
- *            pipeline - uninitialized arraylist_t populated with command *
- *                       stages when the function returns 0.
- * Returns:   0 on valid command/pipeline, 1 if the line is empty or a comment
- *            (pipeline left uninitialized), or -1 on syntax/allocation error
- *            (all partial allocations freed).
+ * @param line     Input line buffer (modified in place if '#' is found).
+ * @param pipeline Output arraylist populated with command* stages on success.
+ * @return int     0 on success, 1 if empty/comment, -1 on syntax/memory error.
  */
 int parse_line(char *line, arraylist_t *pipeline){
     //if we have a comment ignore everything after with terminator
@@ -429,6 +398,9 @@ int parse_line(char *line, arraylist_t *pipeline){
     return 0;
 }
 
+/**
+ * @brief Prints the interactive shell prompt with HOME shortened to '~'.
+ */
 void print_prompt(void) {
     char cwd[PATH_MAX];
 
@@ -450,6 +422,11 @@ void print_prompt(void) {
     return;
 }
 
+/**
+ * @brief Prints a failure message if a child exited non-zero or by signal.
+ *
+ * @param status Wait status returned by waitpid().
+ */
 void report_status(int status) {
     if (WIFEXITED(status)) {
         int code = WEXITSTATUS(status);
@@ -460,6 +437,12 @@ void report_status(int status) {
     }
 }
 
+/**
+ * @brief Checks whether a command name is one of the shell built-ins.
+ *
+ * @param name Command name to check.
+ * @return int 1 if built-in (cd, pwd, which, exit), 0 otherwise.
+ */
 int is_builtin(const char *name) {
     if (strcmp(name, "cd") == 0 || strcmp(name, "pwd") == 0 || strcmp(name, "which") == 0 || strcmp(name, "exit") == 0) {
         return 1;
@@ -467,6 +450,12 @@ int is_builtin(const char *name) {
     return 0;
 }
 
+/**
+ * @brief Resolves a command path directly (if '/') or in standard bin dirs.
+ *
+ * @param name    Program name or path.
+ * @return char*  Heap-allocated executable path, or NULL if not found.
+ */
 char *find_executable(const char *name){
     if (!name || name[0] == '\0') return NULL;
 
@@ -494,6 +483,13 @@ char *find_executable(const char *name){
     return NULL;
 }
 
+/**
+ * @brief Opens and dup2s input/output redirections (or /dev/null) for cmd.
+ *
+ * @param cmd          Command containing input/output redirection paths.
+ * @param use_dev_null If non-zero and no input_file, redirects stdin to /dev/null.
+ * @return int         0 on success, -1 on open/dup2 failure.
+ */
 int setup_redirection(command *cmd, int use_dev_null){
     if(cmd->input_file) {
         int fd = open(cmd->input_file, O_RDONLY);
@@ -550,6 +546,13 @@ int setup_redirection(command *cmd, int use_dev_null){
     return 0;
 }
 
+/**
+ * @brief Executes a built-in command (cd, which, pwd, or exit).
+ *
+ * @param cmd         Parsed built-in command and arguments.
+ * @param should_exit Set to 1 if the exit command is run.
+ * @return int        0 on success, non-zero on error.
+ */
 int run_builtin(command *cmd, int *should_exit) {
     char **args = (char **)cmd->args.data;
 
@@ -621,6 +624,15 @@ int run_builtin(command *cmd, int *should_exit) {
     return 1;
 }
 
+/**
+ * @brief Executes a single command or multi-stage pipeline and waits for children.
+ *
+ * @param pipeline    List of command* stages to run.
+ * @param interactive 1 for interactive mode, 0 for batch mode.
+ * @param should_exit Set to 1 if exit is invoked in the command/pipeline.
+ * @param last_status Populated with the waitpid() status of the final child.
+ * @return int        1 if child process(es) ran, 0 if handled only in parent.
+ */
 int execute_pipeline(arraylist_t *pipeline, int interactive, int *should_exit, int *last_status) {
     int count = (int) al_length(pipeline);
     
@@ -795,6 +807,13 @@ int execute_pipeline(arraylist_t *pipeline, int interactive, int *should_exit, i
     }
 }
 
+/**
+ * @brief Entry point for mysh; picks interactive/batch mode and runs the REPL loop.
+ *
+ * @param argc Argument count (expects 1 or 2).
+ * @param argv Argument vector (optional script path in argv[1]).
+ * @return int EXIT_SUCCESS normally, or EXIT_FAILURE on bad args/file open error.
+ */
 int main (int argc, char **argv) {
     int input_fd;
     int interactive;
